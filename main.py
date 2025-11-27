@@ -24,44 +24,59 @@ async def main():
         exit()
 
     if args.route:
-        # set distance
-        distance = 1200
+        # 设置距离（米）
+        distance = 850
         if args.distance:
             distance = args.distance
-        distance += random.uniform(-5.0, 25.0)
+        distance += random.uniform(-25.0, 25.0)
 
-        # set time
-        total_time = 360
+        # 设置总时间（秒）
+        total_time = 320
         if args.time:
             total_time = args.time
         total_time += random.uniform(-10.0, 10.0)
+        steps = int(total_time)  # 按秒拆分步骤
+        distance_per_step = distance / steps  # 每步距离增量
 
-        # get routes from server
+        # 获取选中的路线
         routes = await get_routes()
+        selected_route = None
         for route in routes:
             if route.id == args.route:
                 selected_route = route
                 break
-        else:
+        if not selected_route:
             raise ValueError(f'不存在id为{args.route}的route')
 
-        # delay random time, used in GitHub Action deployment
+        # 随机延迟
         if args.delay:
             sleep_time = random.randint(0, 240)
+            print(f"延迟 {sleep_time} 秒后开始...")
             time.sleep(sleep_time)
 
-        # prepare & start running
+        # 开始模拟跑步
         automator = FudanAPI(selected_route)
         playground = playgrounds[args.route]
-        current_distance = 0
+        current_distance = 0.0
         await automator.start()
         print(f"START: {selected_route.name}")
-        while current_distance < distance:
-            current_distance += distance / total_time
-            message, _ = await asyncio.gather(
-                automator.update(playground.random_offset(current_distance)), asyncio.sleep(1))
-            print(f"UPDATE: {message} ({current_distance}m / {distance}m)")
-        finish_message = await automator.finish(playground.coordinate(distance))
+
+        # 逐步更新跑步数据（避免初始距离为0导致配速计算错误）
+        for _ in range(steps):
+            current_distance += distance_per_step
+            if current_distance > distance:
+                current_distance = distance
+            # 确保距离至少为0.1米（避免配速计算时分母为0）
+            current_distance = max(current_distance, 0.1)
+            
+            current_point = playground.random_offset(current_distance)
+            message = await automator.update(current_point, current_distance)
+            print(f"UPDATE: {message} ({current_distance:.2f}m / {distance:.2f}m)")
+            await asyncio.sleep(1)
+
+        # 完成跑步
+        finish_point = playground.coordinate(distance)
+        finish_message = await automator.finish(finish_point, distance)
         print(f"FINISHED: {finish_message}")
 
 if __name__ == '__main__':
