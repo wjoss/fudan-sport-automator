@@ -1,6 +1,7 @@
 import asyncio
 import random
 import time
+from datetime import datetime
 from argparse import ArgumentParser
 
 from playground import playgrounds
@@ -25,18 +26,18 @@ async def main():
 
     if args.route:
         # 设置距离（米）
-        distance = 850
+        distance_target = 850
         if args.distance:
-            distance = args.distance
-        distance += random.uniform(-25.0, 25.0)
+            distance_target = args.distance
+        distance_target += random.uniform(-25.0, 25.0)
 
         # 设置总时间（秒）
         total_time = 320
         if args.time:
             total_time = args.time
         total_time += random.uniform(-10.0, 10.0)
-        steps = int(total_time)  # 按秒拆分步骤
-        distance_per_step = distance / steps  # 每步距离增量
+        steps = int(total_time)
+        distance_per_step = distance_target / steps
 
         # 获取选中的路线
         routes = await get_routes()
@@ -61,23 +62,52 @@ async def main():
         await automator.start()
         print(f"START: {selected_route.name}")
 
-        # 逐步更新跑步数据（避免初始距离为0导致配速计算错误）
+        status = "Success"
+        error_msg = ""
+        
+        # 逐步更新跑步数据
         for _ in range(steps):
             current_distance += distance_per_step
-            if current_distance > distance:
-                current_distance = distance
-            # 确保距离至少为0.1米（避免配速计算时分母为0）
+            if current_distance > distance_target:
+                current_distance = distance_target
             current_distance = max(current_distance, 0.1)
             
             current_point = playground.random_offset(current_distance)
             message = await automator.update(current_point, current_distance)
-            print(f"UPDATE: {message} ({current_distance:.2f}m / {distance:.2f}m)")
+            print(f"UPDATE: {message} ({current_distance:.2f}m / {distance_target:.2f}m)")
+            
+            # 检测网络错误，提前中断
+            if message.startswith("Error"):
+                status = "Failed"
+                error_msg = message
+                break
+                
             await asyncio.sleep(1)
 
-        # 完成跑步
-        finish_point = playground.coordinate(distance)
-        finish_message = await automator.finish(finish_point, distance)
-        print(f"FINISHED: {finish_message}")
+        # 完成跑步（仅在未失败时执行 finish）
+        finish_message = "Skipped"
+        if status == "Success":
+            try:
+                finish_point = playground.coordinate(distance_target)
+                finish_message = await automator.finish(finish_point, distance_target)
+                print(f"FINISHED: {finish_message}")
+            except Exception as e:
+                status = "Failed"
+                error_msg = f"Finish Error: {str(e)}"
+
+        # 写入日志
+        log_entry = (
+            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+            f"Route: {selected_route.name} ({args.route}), "
+            f"Dist: {current_distance:.1f}m, "
+            f"Time: {int(total_time)}s, "
+            f"Points: {len(automator.track_points)}, "
+            f"Status: {status} {error_msg}\n"
+        )
+        
+        with open("sport_run.log", "a", encoding="utf-8") as f:
+            f.write(log_entry)
+        print("Log saved to sport_run.log")
 
 if __name__ == '__main__':
     asyncio.run(main())

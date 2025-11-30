@@ -2,6 +2,7 @@ import json
 import os
 import hashlib
 import time
+import asyncio
 import aiohttp
 from geopy.point import Point
 
@@ -81,8 +82,8 @@ class FudanAPI:
         self.device = _get_arg_from_env_or_json('PLATFORM_DEVICE', 'iPhone|iPhone 13<iPhone14,5>')
         self.run_id = None
         self.start_timestamp = None
-        self.track_points = []  # 新增：存储所有轨迹点
-        self.distances = []     # 新增：存储每个点的距离
+        self.track_points = []
+        self.distances = []
 
     async def start(self):
         start_url = 'https://sport.fudan.edu.cn/sapi/v2/run/start'
@@ -117,20 +118,18 @@ class FudanAPI:
         track_point = {
             'lng': round(point.longitude, 6),
             'lat': round(point.latitude, 6),
-            't': int(time.time() * 1000)  # 毫秒级时间戳
+            't': int(time.time() * 1000)
         }
         self.track_points.append(track_point)
         self.distances.append(current_distance)
         
-        # 改进配速计算，避免异常值
         if current_distance > 0 and duration > 0:
             pace = duration / current_distance
-            # 限制配速在合理范围内 (3-10分钟/公里)
-            min_pace = 180  # 3分钟/公里
-            max_pace = 600  # 10分钟/公里
+            min_pace = 180
+            max_pace = 600
             pace = max(min(pace, max_pace), min_pace)
         else:
-            pace = 300  # 默认5分钟/公里
+            pace = 300
         
         params = {
             'userid': self.user_id,
@@ -146,18 +145,26 @@ class FudanAPI:
         params['sign'] = generate_sign(params)
         headers = get_common_headers(self.token)
         
-        async with aiohttp.request('POST', update_url, json=params, headers=headers) as response:
+        # 添加重试机制
+        max_retries = 2    # 最大重试次数
+        for attempt in range(max_retries + 1):
             try:
-                data = await response.json()
-                return data.get('message', 'OK')
+                # 设置10秒超时，防止挂死
+                timeout = aiohttp.ClientTimeout(total=10)
+                async with aiohttp.request('POST', update_url, json=params, headers=headers, timeout=timeout) as response:
+                    data = await response.json()
+                    return data.get('message', 'OK')
             except Exception as e:
-                return f"Error: {str(e)}"
+                if attempt < max_retries:
+                    print(f"网络波动 ({e})，正在重试 ({attempt + 1}/{max_retries})...")
+                    await asyncio.sleep(2)
+                else:
+                    return f"Error: 超过最大重试次数 - {str(e)}"
 
     async def finish(self, point, total_distance):
         finish_url = 'https://sport.fudan.edu.cn/sapi/v2/run/finish'
         total_duration = int(time.time()) - self.start_timestamp
         
-        # 添加最后一个点
         final_point = {
             'lng': round(point.longitude, 6),
             'lat': round(point.latitude, 6),
@@ -166,8 +173,7 @@ class FudanAPI:
         self.track_points.append(final_point)
         self.distances.append(total_distance)
         
-        # 构建轨迹数据（二维数组格式）
-        track_data = [self.track_points]  # 整个轨迹作为一个分段
+        track_data = [self.track_points]
         
         total_pace = 0
         if total_distance > 0:
@@ -185,9 +191,9 @@ class FudanAPI:
             'duration': str(total_duration),
             'pace': f"{total_pace:.2f}",
             'timestamp': str(int(time.time())),
-            'points': json.dumps(track_data),  # 轨迹数据作为JSON字符串
-            'is_abnormal': '0',  # 正常完成
-            'check_points': '[]'  # 空打卡点数组
+            'points': json.dumps(track_data),
+            'is_abnormal': '0',
+            'check_points': '[]'
         }
         params['sign'] = generate_sign(params)
         headers = get_common_headers(self.token)
